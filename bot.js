@@ -5,6 +5,7 @@ const {
   GatewayIntentBits,
   Partials,
   PermissionsBitField,
+  ChannelType,
 } = require("discord.js");
 
 const client = new Client({
@@ -15,66 +16,81 @@ const client = new Client({
   partials: [Partials.Channel],
 });
 
-// File to store assigned IDs
+// File to store assigned IDs (Brought back from your original code)
 const DATA_FILE = path.join(__dirname, "assignedIDs.json");
 
-// Load assigned IDs
+// Load assigned IDs (Brought back from your original code)
 let assignedIDs = new Set();
-try {
-  if (fs.existsSync(DATA_FILE)) {
-    const data = fs.readFileSync(DATA_FILE, "utf8");
-    assignedIDs = new Set(JSON.parse(data));
-    console.log(`📂 Loaded ${assignedIDs.size} assigned IDs from file.`);
-  }
-} catch (err) {
-  console.error("❌ Failed to load assigned IDs:", err);
-}
-
-// Save IDs to file
-function saveAssignedIDs() {
+if (fs.existsSync(DATA_FILE)) {
   try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify([...assignedIDs], null, 2));
+    const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+    assignedIDs = new Set(data);
+    console.log(`📂 Loaded ${assignedIDs.size} assigned IDs from file.`);
   } catch (err) {
-    console.error("❌ Failed to save assigned IDs:", err);
+    console.error("❌ Failed to load assigned IDs:", err);
   }
 }
 
-// Create or find admin log channel
+// Save IDs to file (Brought back from your original code)
+function saveAssignedIDs() {
+  fs.writeFileSync(DATA_FILE, JSON.stringify([...assignedIDs], null, 2));
+}
+
+// Create or find admin log channel (No change)
 async function getLogChannel(guild) {
   let logChannel = guild.channels.cache.find(c => c.name === "admin-log");
   if (!logChannel) {
-    try {
-      logChannel = await guild.channels.create({
-        name: "admin-log",
-        type: 0, // GUILD_TEXT
-        reason: "Private log for join/ID assignment events",
-        permissionOverwrites: [
-          {
-            id: guild.roles.everyone,
-            deny: [PermissionsBitField.Flags.ViewChannel],
-          },
-        ],
-      });
-      console.log("🪵 Created private admin log channel: #admin-log");
-    } catch (err) {
-      console.error("❌ Failed to create log channel:", err);
-    }
+    logChannel = await guild.channels.create({
+      name: "admin-log",
+      type: ChannelType.GuildText,
+      reason: "Private log for join/leave events",
+      permissionOverwrites: [
+        {
+          id: guild.roles.everyone,
+          deny: [PermissionsBitField.Flags.ViewChannel],
+        },
+      ],
+    });
+    console.log("🪵 Created private admin log channel: #admin-log");
   }
   return logChannel;
+}
+
+// Helper to find or create the private category (No change)
+async function getMemberCategory(guild) {
+    let category = guild.channels.cache.find(
+        (c) => c.name === "Member Channels" && c.type === ChannelType.GuildCategory
+    );
+    if (!category) {
+        category = await guild.channels.create({
+            name: "Member Channels",
+            type: ChannelType.GuildCategory,
+            reason: "Category for private member channels",
+            permissionOverwrites: [
+                {
+                    id: guild.roles.everyone,
+                    deny: [PermissionsBitField.Flags.ViewChannel],
+                },
+            ],
+        });
+        console.log("📂 Created private 'Member Channels' category.");
+    }
+    return category;
 }
 
 client.once("ready", () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
 });
 
-// When a new member joins
+// ### REVISED: When a new member joins ###
 client.on("guildMemberAdd", async (member) => {
   try {
     if (member.user.bot) return;
 
-    // Generate unique ID (001–250)
+    // Generate unique ID (001+)
+    // We will set the limit high (e.g., 999) since we are not limited by roles
     let id;
-    for (let i = 1; i <= 250; i++) {
+    for (let i = 1; i <= 9999; i++) {
       const formatted = i.toString().padStart(3, "0");
       if (!assignedIDs.has(formatted)) {
         id = formatted;
@@ -85,111 +101,110 @@ client.on("guildMemberAdd", async (member) => {
     }
 
     if (!id) {
-      await member.send("Sorry, no more unique IDs available.");
+      // This will only happen if you have 999 members
+      await member.send("Sorry, the server is currently full.");
       return;
     }
 
-    const roleName = `Member-${id}`;
+    // Use your requested channel name format
+    const channelName = `AGS - ${id}`;
 
-    // Create hidden role
-    let role = member.guild.roles.cache.find((r) => r.name === roleName);
-    if (!role) {
-      role = await member.guild.roles.create({
-        name: roleName,
-        color: "Blue",
-        hoist: false, // hidden from member list
-        mentionable: false,
-        permissions: [],
-        reason: `Assign unique hidden ID role to ${member.user.tag}`,
-      });
-    }
-
-    await member.roles.add(role);
-
-    // Find admin role
+    // Find admin role and @everyone role
     const adminRole = member.guild.roles.cache.find((r) =>
       r.name.toLowerCase().includes("admin")
     );
     const everyoneRole = member.guild.roles.everyone;
 
-    // Restrict all channels
-    const channels = member.guild.channels.cache.filter(
-      (c) => c.isTextBased() && !c.isThread()
-    );
+    // Get the private category
+    const category = await getMemberCategory(member.guild);
 
-    for (const [, channel] of channels) {
-      try {
-        await channel.permissionOverwrites.edit(everyoneRole, {
-          ViewChannel: false,
-        });
-
-        if (adminRole) {
-          await channel.permissionOverwrites.edit(adminRole, {
-            ViewChannel: true,
-            SendMessages: true,
-            ManageMessages: true,
-          });
-        }
-
-        await channel.permissionOverwrites.edit(role, {
-          ViewChannel: true,
-          SendMessages: true,
-          ReadMessageHistory: true,
-          AddReactions: false,
-        });
-      } catch (err) {
-        console.error(
-          `⚠️ Failed to set permissions for ${channel.name}:`,
-          err.message
-        );
-      }
-    }
+    // Create a NEW private channel for this member
+    const privateChannel = await member.guild.channels.create({
+        name: channelName,
+        type: ChannelType.GuildText,
+        parent: category,
+        reason: `Private channel for ${member.user.tag} (ID: ${id})`,
+        
+        permissionOverwrites: [
+            {
+                id: everyoneRole,
+                deny: [PermissionsBitField.Flags.ViewChannel],
+            },
+            {
+                // Add the new member DIRECTLY by their ID
+                id: member.id, 
+                allow: [
+                    PermissionsBitField.Flags.ViewChannel,
+                    PermissionsBitField.Flags.SendMessages,
+                    PermissionsBitField.Flags.ReadMessageHistory,
+                ],
+            },
+            // Add admin role perms if it exists
+            ...(adminRole ? [{
+                id: adminRole,
+                allow: [
+                    PermissionsBitField.Flags.ViewChannel,
+                    PermissionsBitField.Flags.SendMessages,
+                    PermissionsBitField.Flags.ManageMessages,
+                ],
+            }] : []),
+        ],
+    });
 
     // DM welcome message
     await member.send(
-      `👋 Welcome to Arcade GameStore ${member.user.username}!\nYour unique ID is **${id}**.\nYour privacy is protected — only admins can view all members.`
+      `👋 Welcome to Arcade GameStore ${member.user.username}!\nYour unique ID is **${id}**.\nWe have created a private channel for you.`
     );
+
+    // Send a welcome message in their new private channel
+    await privateChannel.send(`Welcome, ${member.user.toString()}! This is your private channel. Only you and admins can see this.`);
 
     // Log join event
     const logChannel = await getLogChannel(member.guild);
     if (logChannel) {
       await logChannel.send(
-        `🆕 **New Member Joined:** ${member.user.tag}\n🪪 Assigned ID: **${id}**`
+        `🆕 **New Member Joined:** ${member.user.tag}\n🪪 Assigned ID: **${id}**\n🔒 Created Channel: ${privateChannel.toString()}`
       );
     }
 
-    console.log(`✅ ${member.user.tag} joined → Role: ${roleName}`);
+    console.log(`✅ ${member.user.tag} joined → ID: ${id}, Channel: #${channelName}`);
   } catch (error) {
     console.error("❌ Error in guildMemberAdd event:", error);
   }
 });
 
-// When a member leaves → cleanup
+// ### REVISED: When a member leaves → cleanup ###
 client.on("guildMemberRemove", async (member) => {
   try {
-    const idRole = member.roles.cache.find((r) =>
-      /^Member-\d{3}$/.test(r.name)
+    if (member.user.bot) return;
+
+    // Find the channel this member had permission to see
+    const channel = member.guild.channels.cache.find(c =>
+      c.permissionOverwrites.cache.has(member.id) &&
+      c.name.startsWith("AGS - ") // Make sure it's one of our channels
     );
 
-    if (idRole) {
-      const id = idRole.name.split("-")[1];
+    if (channel) {
+      // Get the ID from the channel name (e.g., "AGS - 001" -> "001")
+      const id = channel.name.split(" - ")[1];
 
       // Free up the ID
-      assignedIDs.delete(id);
-      saveAssignedIDs();
+      if (id) {
+        assignedIDs.delete(id);
+        saveAssignedIDs();
+      }
 
-      // Delete the role
-      await idRole.delete("Member left, cleaning up ID role");
+      // Delete the private channel
+      await channel.delete("Member left, cleaning up private channel");
 
       // Log cleanup
       const logChannel = await getLogChannel(member.guild);
       if (logChannel) {
         await logChannel.send(
-          `❌ **Member Left:** ${member.user.tag}\n🧹 Freed ID: **${id}**`
+          `❌ **Member Left:** ${member.user.tag}\n🧹 Freed ID: **${id}**\n🗑️ Deleted channel: #${channel.name}`
         );
       }
-
-      console.log(`🧹 Cleaned up role and ID for ${member.user.tag} (${id})`);
+      console.log(`🧹 Cleaned up channel and ID for ${member.user.tag} (${id})`);
     }
   } catch (error) {
     console.error("❌ Error cleaning up on member leave:", error);
@@ -197,3 +212,4 @@ client.on("guildMemberRemove", async (member) => {
 });
 
 client.login(process.env.DISCORD_TOKEN);
+  
