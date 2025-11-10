@@ -8,42 +8,88 @@ const {
   ChannelType,
 } = require("discord.js");
 
+// --- Configuration ---
+// Change these names to match your server setup
+const CONFIG = {
+  logChannelName: "admin-log",
+  categoryName: "Member Channels",
+  rulesChannelName: "rules",
+  tempRoleName: "Pending", // Role for new members
+  tempRoleDuration: 300000, // 5 minutes in milliseconds
+  announcementChannelNames: ["updates", "announcement"], // Channels to forward FROM
+};
+// ---------------------
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages, // REQUIRED for message forwarding
+    GatewayIntentBits.MessageContent, // REQUIRED for message forwarding
   ],
   partials: [Partials.Channel],
 });
 
-// File to store assigned IDs (Brought back from your original code)
 const DATA_FILE = path.join(__dirname, "assignedIDs.json");
 
-// Load assigned IDs (Brought back from your original code)
+// Load assigned IDs
 let assignedIDs = new Set();
 if (fs.existsSync(DATA_FILE)) {
   try {
     const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
     assignedIDs = new Set(data);
-    console.log(`📂 Loaded ${assignedIDs.size} assigned IDs from file.`);
+    console.log(`Loaded ${assignedIDs.size} assigned IDs from file.`);
   } catch (err) {
-    console.error("❌ Failed to load assigned IDs:", err);
+    console.error("Failed to load assigned IDs:", err);
   }
 }
 
-// Save IDs to file (Brought back from your original code)
+// Save IDs to file
 function saveAssignedIDs() {
-  fs.writeFileSync(DATA_FILE, JSON.stringify([...assignedIDs], null, 2));
+  try {
+    fs.writeFileSync(DATA_FILE, JSON.stringify([...assignedIDs], null, 2));
+  } catch (err) {
+    console.error("Failed to save assigned IDs:", err);
+  }
 }
 
-// Create or find admin log channel (No change)
+// --- Helper Functions ---
+
 async function getLogChannel(guild) {
-  let logChannel = guild.channels.cache.find(c => c.name === "admin-log");
+  let logChannel = guild.channels.cache.find(
+    (c) => c.name === CONFIG.logChannelName
+  );
   if (!logChannel) {
-    logChannel = await guild.channels.create({
-      name: "admin-log",
-      type: ChannelType.GuildText,
-      reason: "Private log for join/leave events",
+    try {
+      logChannel = await guild.channels.create({
+        name: CONFIG.logChannelName,
+        type: ChannelType.GuildText,
+        reason: "Private log for join/leave events",
+        permissionOverwrites: [
+          {
+            id: guild.roles.everyone,
+            deny: [PermissionsBitField.Flags.ViewChannel],
+          },
+        ],
+      });
+      console.log(`Created private log channel: #${CONFIG.logChannelName}`);
+    } catch (err) {
+      console.error("Could not create log channel:", err);
+    }
+  }
+  return logChannel;
+}
+
+async function getMemberCategory(guild) {
+  let category = guild.channels.cache.find(
+    (c) =>
+      c.name === CONFIG.categoryName && c.type === ChannelType.GuildCategory
+  );
+  if (!category) {
+    category = await guild.channels.create({
+      name: CONFIG.categoryName,
+      type: ChannelType.GuildCategory,
+      reason: "Category for private member channels",
       permissionOverwrites: [
         {
           id: guild.roles.everyone,
@@ -51,165 +97,256 @@ async function getLogChannel(guild) {
         },
       ],
     });
-    console.log("🪵 Created private admin log channel: #admin-log");
+    console.log(`Created private category: "${CONFIG.categoryName}"`);
   }
-  return logChannel;
+  return category;
 }
 
-// Helper to find or create the private category (No change)
-async function getMemberCategory(guild) {
-    let category = guild.channels.cache.find(
-        (c) => c.name === "Member Channels" && c.type === ChannelType.GuildCategory
-    );
-    if (!category) {
-        category = await guild.channels.create({
-            name: "Member Channels",
-            type: ChannelType.GuildCategory,
-            reason: "Category for private member channels",
-            permissionOverwrites: [
-                {
-                    id: guild.roles.everyone,
-                    deny: [PermissionsBitField.Flags.ViewChannel],
-                },
-            ],
-        });
-        console.log("📂 Created private 'Member Channels' category.");
-    }
-    return category;
+async function getOrCreateRole(guild, roleName) {
+  let role = guild.roles.cache.find((r) => r.name === roleName);
+  if (!role) {
+    role = await guild.roles.create({
+      name: roleName,
+      reason: "Temporary role for new members",
+    });
+    console.log(`Created role: @${roleName}`);
+  }
+  return role;
 }
+
+// --- Bot Events ---
 
 client.once("ready", () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
+  console.log(`Logged in as ${client.user.tag}`);
 });
 
-// ### REVISED: When a new member joins ###
+/**
+ * NEW: Handle new member joining
+ * 1. Give temporary role
+ * 2. Set 5-minute timer
+ * 3. After timer, remove role and create private channel
+ */
 client.on("guildMemberAdd", async (member) => {
+  if (member.user.bot) return;
+
   try {
-    if (member.user.bot) return;
+    // 1. Find or create the temporary role
+    const tempRole = await getOrCreateRole(member.guild, CONFIG.tempRoleName);
 
-    // Generate unique ID (001+)
-    // We will set the limit high (e.g., 999) since we are not limited by roles
-    let id;
-    for (let i = 1; i <= 9999; i++) {
-      const formatted = i.toString().padStart(3, "0");
-      if (!assignedIDs.has(formatted)) {
-        id = formatted;
-        assignedIDs.add(formatted);
-        saveAssignedIDs();
-        break;
-      }
-    }
-
-    if (!id) {
-      // This will only happen if you have 999 members
-      await member.send("Sorry, the server is currently full.");
-      return;
-    }
-
-    // Use your requested channel name format
-    const channelName = `AGS - ${id}`;
-
-    // Find admin role and @everyone role
-    const adminRole = member.guild.roles.cache.find((r) =>
-      r.name.toLowerCase().includes("admin")
+    // 2. Find or create the rules channel and set its permissions
+    let rulesChannel = member.guild.channels.cache.find(
+      (c) => c.name === CONFIG.rulesChannelName
     );
-    const everyoneRole = member.guild.roles.everyone;
-
-    // Get the private category
-    const category = await getMemberCategory(member.guild);
-
-    // Create a NEW private channel for this member
-    const privateChannel = await member.guild.channels.create({
-        name: channelName,
+    if (!rulesChannel) {
+      rulesChannel = await member.guild.channels.create({
+        name: CONFIG.rulesChannelName,
         type: ChannelType.GuildText,
-        parent: category,
-        reason: `Private channel for ${member.user.tag} (ID: ${id})`,
-        
         permissionOverwrites: [
-            {
-                id: everyoneRole,
-                deny: [PermissionsBitField.Flags.ViewChannel],
-            },
-            {
-                // Add the new member DIRECTLY by their ID
-                id: member.id, 
-                allow: [
-                    PermissionsBitField.Flags.ViewChannel,
-                    PermissionsBitField.Flags.SendMessages,
-                    PermissionsBitField.Flags.ReadMessageHistory,
-                ],
-            },
-            // Add admin role perms if it exists
-            ...(adminRole ? [{
-                id: adminRole,
-                allow: [
-                    PermissionsBitField.Flags.ViewChannel,
-                    PermissionsBitField.Flags.SendMessages,
-                    PermissionsBitField.Flags.ManageMessages,
-                ],
-            }] : []),
+          {
+            id: member.guild.roles.everyone, // Hide from @everyone
+            deny: [PermissionsBitField.Flags.ViewChannel],
+          },
+          {
+            id: tempRole.id, // Show *only* to temp role
+            allow: [PermissionsBitField.Flags.ViewChannel],
+            deny: [PermissionsBitField.Flags.SendMessages], // Read-only
+          },
         ],
-    });
-
-    // DM welcome message
-    await member.send(
-      `👋 Welcome to Arcade GameStore ${member.user.username}!\nYour unique ID is **${id}**.\nWe have created a private channel for you.`
-    );
-
-    // Send a welcome message in their new private channel
-    await privateChannel.send(`Welcome, ${member.user.toString()}! This is your private channel. Only you and admins can see this.`);
-
-    // Log join event
-    const logChannel = await getLogChannel(member.guild);
-    if (logChannel) {
-      await logChannel.send(
-        `🆕 **New Member Joined:** ${member.user.tag}\n🪪 Assigned ID: **${id}**\n🔒 Created Channel: ${privateChannel.toString()}`
-      );
+      });
+      console.log(`Created #${CONFIG.rulesChannelName}`);
     }
 
-    console.log(`✅ ${member.user.tag} joined → ID: ${id}, Channel: #${channelName}`);
+    // 3. Add the role to the member
+    await member.roles.add(tempRole);
+    await member.send(
+      `👋 Welcome to Arcade GameStore, ${member.user.username}!\n` +
+      `Please read the server rules in the #${CONFIG.rulesChannelName} channel. ` +
+      `You will get access to your private channel in 5 minutes.`
+    );
+
+    // 4. Set the 5-minute timer
+    setTimeout(async () => {
+      try {
+        // Ensure member is still in the server
+        if (!member.guild.members.cache.has(member.id)) {
+          console.log(`Member ${member.user.tag} left before timer finished.`);
+          return;
+        }
+
+        // 5. Remove the temporary role
+        await member.roles.remove(tempRole);
+
+        // 6. Proceed with original channel creation logic
+        let id;
+        for (let i = 1; i <= 999; i++) {
+          const formatted = i.toString().padStart(3, "0");
+          if (!assignedIDs.has(formatted)) {
+            id = formatted;
+            assignedIDs.add(formatted);
+            saveAssignedIDs();
+            break;
+          }
+        }
+
+        if (!id) {
+          await member.send("Sorry, the server is currently full.");
+          return;
+        }
+
+        const channelName = `AGS - ${id}`;
+        const category = await getMemberCategory(member.guild);
+        const adminRole = member.guild.roles.cache.find((r) =>
+          r.name.toLowerCase().includes("admin")
+        );
+
+        const privateChannel = await member.guild.channels.create({
+          name: channelName,
+          type: ChannelType.GuildText,
+          parent: category,
+          reason: `Private channel for ${member.user.tag} (ID: ${id})`,
+          permissionOverwrites: [
+            {
+              id: member.guild.roles.everyone,
+              deny: [PermissionsBitField.Flags.ViewChannel],
+            },
+            {
+              id: member.id, // Add member directly
+              allow: [
+                PermissionsBitField.Flags.ViewChannel,
+                PermissionsBitField.Flags.SendMessages,
+                PermissionsBitField.Flags.ReadMessageHistory,
+              ],
+            },
+            ...(adminRole
+              ? [
+                  {
+                    id: adminRole,
+                    allow: [
+                      PermissionsBitField.Flags.ViewChannel,
+                      PermissionsBitField.Flags.SendMessages,
+                      PermissionsBitField.Flags.ManageMessages,
+                    ],
+                  },
+                ]
+              : []),
+          ],
+        });
+
+        await member.send(
+          `Your unique ID is **${id}**. We have created your private channel: ${privateChannel.toString()}`
+        );
+        await privateChannel.send(
+          `Welcome, ${member.user.toString()}! This is your private channel.`
+        );
+
+        const logChannel = await getLogChannel(member.guild);
+        if (logChannel) {
+          await logChannel.send(
+            `New Member: ${member.user.tag}\nAssigned ID: **${id}**\nCreated Channel: ${privateChannel.toString()}`
+          );
+        }
+        console.log(
+          `Member ${member.user.tag} processed → ID: ${id}, Channel: #${channelName}`
+        );
+      } catch (err) {
+        console.error("Error during member processing timer:", err);
+      }
+    }, CONFIG.tempRoleDuration);
   } catch (error) {
-    console.error("❌ Error in guildMemberAdd event:", error);
+    console.error("Error in guildMemberAdd event:", error);
   }
 });
 
-// ### REVISED: When a member leaves → cleanup ###
+/**
+ * REVISED: Handle member leaving
+ * Logic is sound. Finds the channel this member had explicit perms for and deletes it.
+ */
 client.on("guildMemberRemove", async (member) => {
-  try {
-    if (member.user.bot) return;
+  if (member.user.bot) return;
 
+  try {
     // Find the channel this member had permission to see
-    const channel = member.guild.channels.cache.find(c =>
-      c.permissionOverwrites.cache.has(member.id) &&
-      c.name.startsWith("AGS - ") // Make sure it's one of our channels
+    const channel = member.guild.channels.cache.find(
+      (c) =>
+        c.permissionOverwrites.cache.has(member.id) &&
+        c.name.startsWith("AGS - ")
     );
 
     if (channel) {
-      // Get the ID from the channel name (e.g., "AGS - 001" -> "001")
       const id = channel.name.split(" - ")[1];
 
-      // Free up the ID
       if (id) {
         assignedIDs.delete(id);
         saveAssignedIDs();
       }
 
-      // Delete the private channel
       await channel.delete("Member left, cleaning up private channel");
 
-      // Log cleanup
       const logChannel = await getLogChannel(member.guild);
       if (logChannel) {
         await logChannel.send(
-          `❌ **Member Left:** ${member.user.tag}\n🧹 Freed ID: **${id}**\n🗑️ Deleted channel: #${channel.name}`
+          `Member Left: ${member.user.tag}\nFreed ID: **${id}**\nDeleted channel: #${channel.name}`
         );
       }
-      console.log(`🧹 Cleaned up channel and ID for ${member.user.tag} (${id})`);
+      console.log(`Cleaned up channel and ID for ${member.user.tag} (${id})`);
     }
   } catch (error) {
-    console.error("❌ Error cleaning up on member leave:", error);
+    console.error("Error cleaning up on member leave:", error);
+  }
+});
+
+/**
+ * NEW: Handle message forwarding
+ * 1. Check if message is in an announcement channel
+ * 2. Find all private member channels
+ * 3. Forward the message content, embeds, and files
+ */
+client.on("messageCreate", async (message) => {
+  // Ignore bots and messages not in an announcement channel
+  if (message.author.bot) return;
+  if (!CONFIG.announcementChannelNames.includes(message.channel.name)) return;
+
+  try {
+    // Find the category for "Member Channels"
+    const category = message.guild.channels.cache.find(
+      (c) =>
+        c.name === CONFIG.categoryName && c.type === ChannelType.GuildCategory
+    );
+    if (!category) return; // No member category found
+
+    // Find all text channels in that category (excluding the log channel)
+    const memberChannels = message.guild.channels.cache.filter(
+      (c) =>
+        c.parentId === category.id &&
+        c.type === ChannelType.GuildText &&
+        c.name !== CONFIG.logChannelName
+    );
+
+    if (memberChannels.size === 0) return; // No member channels to post to
+
+    console.log(
+      `Forwarding message from #${message.channel.name} to ${memberChannels.size} member channels...`
+    );
+
+    // Prepare the message content for forwarding
+    const messageOptions = {
+      content: message.content,
+      embeds: message.embeds,
+      files: [...message.attachments.values()],
+    };
+
+    // Send to all channels
+    for (const channel of memberChannels.values()) {
+      try {
+        await channel.send(messageOptions);
+      } catch (err) {
+        console.error(`Failed to send message to #${channel.name}:`, err);
+      }
+    }
+  } catch (err) {
+    console.error("Error in message forwarding:", err);
   }
 });
 
 client.login(process.env.DISCORD_TOKEN);
-  
+	
