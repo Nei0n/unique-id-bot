@@ -1,0 +1,13 @@
+{
+  "name": "unique-id-bot",
+  "version": "1.0.0",
+  "description": "A Discord bot that assigns unique IDs and roles.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.0",
+    "dotenv": "^16.4.5"
+  }
+}
