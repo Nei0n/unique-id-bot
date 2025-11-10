@@ -20,37 +20,45 @@ const DATA_FILE = path.join(__dirname, "assignedIDs.json");
 
 // Load assigned IDs
 let assignedIDs = new Set();
-if (fs.existsSync(DATA_FILE)) {
-  try {
-    const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
-    assignedIDs = new Set(data);
+try {
+  if (fs.existsSync(DATA_FILE)) {
+    const data = fs.readFileSync(DATA_FILE, "utf8");
+    assignedIDs = new Set(JSON.parse(data));
     console.log(`📂 Loaded ${assignedIDs.size} assigned IDs from file.`);
-  } catch (err) {
-    console.error("❌ Failed to load assigned IDs:", err);
   }
+} catch (err) {
+  console.error("❌ Failed to load assigned IDs:", err);
 }
 
 // Save IDs to file
 function saveAssignedIDs() {
-  fs.writeFileSync(DATA_FILE, JSON.stringify([...assignedIDs], null, 2));
+  try {
+    fs.writeFileSync(DATA_FILE, JSON.stringify([...assignedIDs], null, 2));
+  } catch (err) {
+    console.error("❌ Failed to save assigned IDs:", err);
+  }
 }
 
 // Create or find admin log channel
 async function getLogChannel(guild) {
   let logChannel = guild.channels.cache.find(c => c.name === "admin-log");
   if (!logChannel) {
-    logChannel = await guild.channels.create({
-      name: "admin-log",
-      type: 0, // GUILD_TEXT
-      reason: "Private log for join/ID assignment events",
-      permissionOverwrites: [
-        {
-          id: guild.roles.everyone,
-          deny: [PermissionsBitField.Flags.ViewChannel],
-        },
-      ],
-    });
-    console.log("🪵 Created private admin log channel: #admin-log");
+    try {
+      logChannel = await guild.channels.create({
+        name: "admin-log",
+        type: 0, // GUILD_TEXT
+        reason: "Private log for join/ID assignment events",
+        permissionOverwrites: [
+          {
+            id: guild.roles.everyone,
+            deny: [PermissionsBitField.Flags.ViewChannel],
+          },
+        ],
+      });
+      console.log("🪵 Created private admin log channel: #admin-log");
+    } catch (err) {
+      console.error("❌ Failed to create log channel:", err);
+    }
   }
   return logChannel;
 }
