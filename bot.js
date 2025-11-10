@@ -1,15 +1,16 @@
-const fs = require("fs");
-const path = require("path");
+// Change is on this line: added 'Events'
 const {
   Client,
+  Events, // <-- ADDED THIS
   GatewayIntentBits,
   Partials,
   PermissionsBitField,
   ChannelType,
 } = require("discord.js");
+const fs = require("fs");
+const path = require("path");
 
 // --- Configuration ---
-// Change these names to match your server setup
 const CONFIG = {
   logChannelName: "admin-log",
   categoryName: "Member Channels",
@@ -24,8 +25,8 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessages, // REQUIRED for message forwarding
-    GatewayIntentBits.MessageContent, // REQUIRED for message forwarding
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
   ],
   partials: [Partials.Channel],
 });
@@ -116,7 +117,8 @@ async function getOrCreateRole(guild, roleName) {
 
 // --- Bot Events ---
 
-client.once("ready", () => {
+// Change is on this line: "ready" became Events.ClientReady
+client.once(Events.ClientReady, () => { // <-- CHANGED THIS
   console.log(`Logged in as ${client.user.tag}`);
 });
 
@@ -349,4 +351,4 @@ client.on("messageCreate", async (message) => {
 });
 
 client.login(process.env.DISCORD_TOKEN);
-	
+		
