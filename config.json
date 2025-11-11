@@ -1,0 +1,9 @@
+{
+  "clientId": "YOUR_BOT_CLIENT_ID_PLACEHOLDER",
+  "guildId": "YOUR_SERVER_ID_PLACEHOLDER",
+  "logChannelName": "admin-log",
+  "userLogChannelName": "user-log",
+  "categoryName": "Member Channels",
+  "rulesChannelName": "rules",
+  "tempRoleName": "Pending"
+}
